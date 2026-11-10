@@ -81,7 +81,11 @@ async function staleWhileRevalidate(event, req, url) {
   const kunci = kunciCache(req, url);
   const tersimpan = await cache.match(kunci);
 
-  const ambilBaru = fetch(req)
+  // cache: 'no-cache' = selalu tanya server lewat permintaan bersyarat (jawaban 304
+  // yang kecil kalau file belum berubah). Tanpa ini, cache HTTP browser menjawab
+  // sendiri selama max-age dari hosting (GitHub Pages: 10 menit), sehingga server
+  // tidak ditanya dan versi baru terlambat terlihat.
+  const ambilBaru = fetch(req, { cache: 'no-cache' })
     .then(async function (res) {
       if (res && res.ok && res.type === 'basic') await cache.put(kunci, await salinUntukCache(res));
       return res;
