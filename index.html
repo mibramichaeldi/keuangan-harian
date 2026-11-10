@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fbf8ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151821" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Catat pemasukan, pengeluaran, dan transfer harian. Data tersimpan di perangkat ini.">
+  <title>Keuangan Harian</title>
+  <!-- <link rel="manifest"> dipasang oleh app.js hanya lewat http/https (di file:// Chrome menolaknya) -->
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Keuangan">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="aplikasi">
+    <div id="pemberitahuan" class="pemberitahuan"></div>
+    <main id="layar" class="layar"></main>
+
+    <nav class="nav-bawah" aria-label="Navigasi utama">
+      <a href="#/" data-tab="beranda">
+        <svg class="ikon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3.5 10.5 12 4l8.5 6.5"/><path d="M5.5 9.5V20h4.75v-5.5h3.5V20h4.75V9.5"/></svg>
+        <span>Beranda</span>
+      </a>
+      <a href="#/riwayat" data-tab="riwayat">
+        <svg class="ikon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4.5" y="3" width="15" height="18" rx="2"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/></svg>
+        <span>Riwayat</span>
+      </a>
+      <button type="button" id="tombol-catat" class="tombol-catat" aria-haspopup="dialog">
+        <span class="lingkaran"><svg class="ikon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
+        <span>Catat</span>
+      </button>
+      <a href="#/laporan" data-tab="laporan">
+        <svg class="ikon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20h16"/><path d="M7.5 16v-5M12 16V6M16.5 16v-8"/></svg>
+        <span>Laporan</span>
+      </a>
+      <a href="#/pengaturan" data-tab="pengaturan">
+        <svg class="ikon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+        <span>Pengaturan</span>
+      </a>
+    </nav>
+  </div>
+
+  <!-- Lembar (form Catat, Ubah, Atur saldo awal, ...) diisi oleh app.js -->
+  <dialog id="lembar" class="lembar" aria-labelledby="lembar-judul"></dialog>
+
+  <dialog id="dialog-konfirmasi" class="dialog-kecil" aria-labelledby="konfirmasi-judul" aria-describedby="konfirmasi-pesan">
+    <form method="dialog">
+      <h2 id="konfirmasi-judul"></h2>
+      <p id="konfirmasi-pesan"></p>
+      <div class="dialog-tombol">
+        <button type="submit" value="batal" class="tombol tombol-kedua">Batal</button>
+        <button type="submit" value="ya" id="konfirmasi-ya" class="tombol tombol-bahaya penuh">Hapus</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast-wadah" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="pengumuman" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+  <noscript><p class="noscript">Aplikasi ini membutuhkan JavaScript.</p></noscript>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

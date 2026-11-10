@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Keuangan Harian</title>
+  <!-- versi "maskable": latar penuh tanpa sudut, isi di dalam zona aman (lingkaran 80%) -->
+  <rect width="512" height="512" fill="#23408e"/>
+  <g transform="translate(256 256) scale(0.74) translate(-256 -256)">
+    <rect x="120" y="88" width="272" height="336" rx="28" fill="#fbf8ef"/>
+    <path d="M120 186H392M120 264H392M120 342H392" stroke="#a9c3e6" stroke-width="10"/>
+    <path d="M184 88V424" stroke="#e06a6a" stroke-width="10"/>
+    <g stroke-width="20" stroke-linecap="round" fill="none">
+      <path d="M214 156H286" stroke="#2b3240"/>
+      <path d="M316 156H358" stroke="#1f3fa3"/>
+      <path d="M214 234H270" stroke="#2b3240"/>
+      <path d="M316 234H358" stroke="#c0392b"/>
+      <path d="M214 312H282" stroke="#2b3240"/>
+      <path d="M316 312H358" stroke="#c0392b"/>
+    </g>
+  </g>
+</svg>
