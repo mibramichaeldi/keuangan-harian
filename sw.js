@@ -5,17 +5,20 @@
  * Strategi stale-while-revalidate: file aplikasi langsung dijawab dari cache
  * (cepat dan bisa offline), sambil versi terbaru diambil di latar untuk dipakai
  * saat aplikasi dibuka berikutnya. Data keuangan tidak lewat sini; data ada di
- * localStorage browser.
+ * localStorage browser. Permintaan ke alamat lain (login Google dan sinkron ke
+ * Firebase) juga tidak disentuh: itu selalu langsung ke jaringan.
  *
  * Ganti VERSI kalau daftar file berubah, supaya cache lama dibersihkan.
  */
 'use strict';
 
-const VERSI = 'keuangan-harian-v1';
+const VERSI = 'keuangan-harian-v2';
 const FILE_APLIKASI = [
   './',
   './css/style.css',
   './js/data.js',
+  './js/konfig.js',
+  './js/sinkron.js',
   './js/app.js',
   './manifest.webmanifest',
   './icons/icon.svg',

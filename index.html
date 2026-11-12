@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fbf8ef" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#151821" media="(prefers-color-scheme: dark)">
-  <meta name="description" content="Catat pemasukan, pengeluaran, dan transfer harian. Data tersimpan di perangkat ini.">
+  <meta name="description" content="Catat pemasukan, pengeluaran, dan transfer harian. Data tersimpan di perangkat ini, dan bisa disamakan antar perangkat lewat akun Google.">
   <title>Keuangan Harian</title>
   <!-- <link rel="manifest"> dipasang oleh app.js hanya lewat http/https (di file:// Chrome menolaknya) -->
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -61,12 +61,23 @@
     </form>
   </dialog>
 
+  <!-- Dialog dengan beberapa pilihan (mis. saat perangkat pertama kali disambungkan); diisi oleh app.js -->
+  <dialog id="dialog-pilihan" class="dialog-kecil" aria-labelledby="pilihan-judul" aria-describedby="pilihan-pesan">
+    <form method="dialog">
+      <h2 id="pilihan-judul"></h2>
+      <p id="pilihan-pesan"></p>
+      <div id="pilihan-daftar" class="pilihan-daftar"></div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast-wadah" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="pengumuman" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
   <noscript><p class="noscript">Aplikasi ini membutuhkan JavaScript.</p></noscript>
 
   <script src="js/data.js"></script>
+  <script src="js/konfig.js"></script>
+  <script src="js/sinkron.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

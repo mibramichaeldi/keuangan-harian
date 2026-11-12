@@ -696,6 +696,28 @@ a.baris:focus-visible {
   margin-top: 0;
 }
 
+/* --------------------------------------------- sinkron antar perangkat */
+
+.status-beranda:empty {
+  display: none;
+}
+
+.akun-google {
+  margin: 0.25rem 0 0;
+}
+
+.akun-google dd {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.status-sinkron {
+  margin-top: 0.375rem;
+  color: var(--tinta-lembut);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------- tombol */
 
 .tombol {
@@ -1306,6 +1328,37 @@ select {
   margin-top: 1.25rem;
 }
 
+/* Dialog dengan beberapa pilihan: tiap pilihan satu tombol lebar, judul + keterangan. */
+.pilihan-daftar {
+  display: grid;
+  gap: 0.625rem;
+  margin-top: 1rem;
+}
+
+.tombol.pilihan {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  width: 100%;
+  padding: 0.625rem 1rem;
+  border-radius: 14px;
+  text-align: left;
+}
+
+.tombol-teks.pilihan {
+  align-items: center;
+  text-align: center;
+}
+
+.pilihan-label {
+  font-weight: 700;
+}
+
+.pilihan-ket {
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
 /* ------------------------------------------------------------------ toast */
 
 .toast-wadah {
@@ -1335,6 +1388,12 @@ select {
   box-shadow: var(--bayangan);
   pointer-events: auto;
   animation: toast-muncul 0.18s ease-out;
+}
+
+/* Teks panjang tanpa spasi (mis. alamat email) dipatahkan, bukan terpotong di tepi. */
+.toast > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .toast button {

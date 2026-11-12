@@ -2,8 +2,9 @@
  * Keuangan Harian - tampilan: layar, form, navigasi.
  *
  * Semua aturan data & perhitungan ada di js/data.js (window.KeuanganData).
+ * Login Google dan kirim-ambil data ada di js/sinkron.js (window.KeuanganSinkron).
  * File ini mengurus routing lewat hash (#/...), menggambar layar, form Catat,
- * dialog konfirmasi, toast, dan menyimpan ke localStorage.
+ * dialog konfirmasi, toast, menyimpan ke localStorage, dan kapan sinkron dijalankan.
  *
  * String di file ini sengaja ASCII; simbol memakai entitas HTML (&rarr; dll).
  */
@@ -17,7 +18,7 @@
   }
 
   const NAMA_APLIKASI = 'Keuangan Harian';
-  const VERSI_APLIKASI = '1.0';
+  const VERSI_APLIKASI = '1.1';
   const LEWAT_WEB = location.protocol === 'http:' || location.protocol === 'https:';
   const TAB = ['beranda', 'riwayat', 'laporan', 'pengaturan'];
   const JUDUL_LAYAR = { beranda: 'Beranda', riwayat: 'Riwayat', laporan: 'Laporan', pengaturan: 'Pengaturan' };
@@ -235,6 +236,7 @@
     data = dataBaru;
     gambarUlang();
     if (data.transaksi.length) mintaPenyimpananTetap();
+    jadwalkanSinkron(JEDA_SETELAH_SIMPAN);
     return { ok: true };
   }
 
@@ -285,6 +287,436 @@
     if (!('serviceWorker' in navigator)) return 'Browser ini tidak mendukung mode tanpa internet.';
     if (navigator.serviceWorker.controller) return 'Siap dipakai tanpa internet.';
     return 'Mode tanpa internet sedang disiapkan. Buka ulang aplikasi sebentar lagi.';
+  }
+
+  // ===========================================================================
+  // Masuk dengan Google & sinkron antar perangkat
+  //
+  // Login, kirim-ambil, dan penggabungan data ada di js/sinkron.js dan js/data.js.
+  // Di sini hanya: kapan sinkron dijalankan, dan bagaimana hasilnya ditampilkan.
+  // Aplikasi tetap bekerja penuh tanpa masuk dan tanpa internet; sinkron menyusul.
+  // ===========================================================================
+
+  const S = window.KeuanganSinkron || null;
+  const DI_KOMPUTER_SENDIRI = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const JEDA_SETELAH_SIMPAN = 1500;      // beberapa perubahan beruntun cukup satu kiriman
+  const JEDA_BERKALA = 60000;            // selagi aplikasi terbuka: tanya awan tiap menit (permintaan kecil)
+  const JEDA_ANTAR_OTOMATIS = 10000;     // jarak terdekat dua sinkron otomatis
+  const JEDA_SETELAH_GAGAL = 5 * 60000;  // sesudah gagal bukan karena jaringan, jangan terus-menerus mencoba
+  const HARI_MASUK_ULANG = 150;          // Google menghapus klien login yang 6 bulan tidak dipakai
+  const MS_SEHARI = 24 * 60 * 60 * 1000;
+
+  const sinkron = S && window.KeuanganKonfig ? S.buatSinkron({
+    konfig: window.KeuanganKonfig,
+    ambil: function (url, init) { return window.fetch(url, init); },
+    penyimpanan: penyimpanan,
+    // Alamat folder aplikasi, persis seperti yang didaftarkan di Google (diakhiri "/").
+    alamatKembali: location.origin + location.pathname.replace(/[^/]*$/, ''),
+    // Di komputer sendiri (localhost) data disimpan di cabang terpisah, supaya percobaan
+    // tidak pernah bercampur dengan data sungguhan.
+    cabang: DI_KOMPUTER_SENDIRI ? 'uji' : undefined
+  }) : null;
+
+  let sinkronBerjalan = 0;       // jumlah sinkron yang sedang ditunggu
+  let galatSinkron = null;       // { jenis, pesan } dari sinkron terakhir yang gagal
+  let galatDitampilkan = '';     // supaya kartu galat yang sama tidak muncul berulang-ulang
+  let sudahDitanyaSambung = false;
+  let pewaktuSinkron = null;
+  let sinkronTerakhirDicoba = 0;
+
+  /** Sinkron bisa dipakai: dibuka lewat http(s), konfigurasi ada, dan data bisa disimpan. */
+  function sinkronSiap() {
+    return !!sinkron && sinkron.tersedia() && modeSimpan === 'normal';
+  }
+
+  /** Keadaan login (tanpa token), atau null kalau belum masuk atau sinkron tidak bisa dipakai. */
+  function sesiGoogle() {
+    return sinkronSiap() ? sinkron.sesi() : null;
+  }
+
+  /** Sudah masuk DAN data perangkat ini sudah disamakan dengan data di akun Google. */
+  function tersambung() {
+    const sesi = sesiGoogle();
+    return !!sesi && sesi.terhubung;
+  }
+
+  /**
+   * Kembali dari halaman login Google: jawabannya ada di bagian # alamat. Diambil
+   * sebelum routing berjalan, dan langsung dibuang dari alamat supaya token tidak
+   * tertinggal di kolom alamat maupun riwayat browser.
+   */
+  function ambilJawabanLogin() {
+    const hash = location.hash;
+    if (!sinkron || !sinkron.adaJawabanLogin(hash)) return null;
+    history.replaceState(null, '', location.pathname + location.search + '#/pengaturan');
+    return hash;
+  }
+
+  /** 'hari ini pukul 10.15', 'kemarin pukul 21.03', atau '8 November 2026 pukul 10.15'. */
+  function formatWaktuRingkas(ms) {
+    const d = new Date(ms);
+    const jam = 'pukul ' + String(d.getHours()).padStart(2, '0') + '.' + String(d.getMinutes()).padStart(2, '0');
+    const tanggal = D.tanggalLokal(d);
+    const hariIni = D.tanggalLokal();
+    if (tanggal === hariIni) return 'hari ini ' + jam;
+    if (tanggal === D.geserTanggal(hariIni, -1)) return 'kemarin ' + jam;
+    return formatTanggalSingkat(tanggal) + ' ' + jam;
+  }
+
+  function teksStatusSinkron(sesi) {
+    if (sesi.perluMasukLagi) return 'Sesi login berakhir. Masuk lagi untuk melanjutkan sinkron.';
+    if (sinkronBerjalan > 0) return 'Menyinkronkan...';
+    if (!sesi.terhubung) return 'Belum disambungkan ke data di akun Google.';
+    const terakhir = sesi.sinkronTerakhir ? 'Terakhir tersinkron ' + formatWaktuRingkas(sesi.sinkronTerakhir) + '.' : '';
+    if (galatSinkron && galatSinkron.jenis === 'jaringan') {
+      return ('Belum tersinkron: server tidak bisa dihubungi. Dicoba lagi otomatis. ' + terakhir).trim();
+    }
+    if (galatSinkron) return 'Sinkron berhenti: ' + galatSinkron.pesan;
+    return sesi.sinkronTerakhir ? 'Tersinkron ' + formatWaktuRingkas(sesi.sinkronTerakhir) + '.' : 'Belum pernah tersinkron.';
+  }
+
+  /** Satu baris kecil di Beranda; hanya keadaan terakhir, tanpa "sedang menyinkronkan". */
+  function htmlStatusBeranda() {
+    const sesi = sesiGoogle();
+    if (!sesi) return '';
+    let teks;
+    if (sesi.perluMasukLagi) teks = 'Sinkron berhenti: perlu masuk lagi';
+    else if (!sesi.terhubung) teks = 'Belum disambungkan ke akun Google';
+    else if (galatSinkron) teks = 'Belum tersinkron';
+    else if (sesi.sinkronTerakhir) teks = 'Tersinkron ' + formatWaktuRingkas(sesi.sinkronTerakhir);
+    else teks = 'Belum pernah tersinkron';
+    return esc(teks);
+  }
+
+  function htmlIsiSinkron() {
+    if (!sinkron || !sinkron.tersedia()) {
+      return '<p class="petunjuk">Masuk dengan Google untuk menyamakan data antara HP dan laptop hanya bisa dipakai kalau aplikasi dibuka dari alamat https, bukan sebagai file.</p>';
+    }
+    if (modeSimpan !== 'normal') {
+      return '<p class="petunjuk">Sinkron belum bisa dipakai selama data di browser ini belum bisa disimpan.</p>';
+    }
+    const catatanUji = DI_KOMPUTER_SENDIRI
+      ? '<p class="petunjuk">Mode percobaan (localhost): data sinkron di sini disimpan terpisah dari data sungguhan.</p>'
+      : '';
+    const sesi = sinkron.sesi();
+    if (!sesi) {
+      return `
+        <p class="petunjuk">Masuk dengan akun Google supaya catatan di HP dan laptop selalu sama. Tanpa masuk pun aplikasi tetap bisa dipakai seperti biasa.</p>
+        ${catatanUji}
+        <button type="button" class="tombol tombol-utama lebar jarak-atas" data-aksi="masuk-google" data-kunci-fokus="masuk-google">Masuk dengan Google</button>`;
+    }
+
+    const sudahLama = !sesi.perluMasukLagi && !!sesi.masukPada && Date.now() - sesi.masukPada > HARI_MASUK_ULANG * MS_SEHARI;
+    let tombolUtama;
+    if (sesi.perluMasukLagi) {
+      tombolUtama = '<button type="button" class="tombol tombol-utama lebar" data-aksi="masuk-google" data-kunci-fokus="masuk-google">Masuk lagi</button>';
+    } else if (!sesi.terhubung) {
+      tombolUtama = '<button type="button" class="tombol tombol-utama lebar" data-aksi="sambungkan" data-kunci-fokus="sambungkan">Sambungkan sekarang</button>';
+    } else {
+      tombolUtama = '<button type="button" class="tombol tombol-kedua lebar" data-aksi="sinkron-sekarang" data-kunci-fokus="sinkron-sekarang">Sinkronkan sekarang</button>';
+    }
+    return `
+      <dl class="akun-google">
+        <dt class="label-kecil">Masuk sebagai</dt>
+        <dd>${esc(sesi.email || sesi.nama || 'akun Google')}</dd>
+      </dl>
+      <p class="status-sinkron" id="status-sinkron">${esc(teksStatusSinkron(sesi))}</p>
+      ${catatanUji}
+      ${sudahLama ? '<p class="petunjuk">Sudah lebih dari 5 bulan sejak terakhir masuk. Masuk ulang sekali supaya login Google untuk aplikasi ini tetap aktif.</p>' : ''}
+      <div class="tumpuk-tombol">
+        ${tombolUtama}
+        ${sudahLama ? '<button type="button" class="tombol tombol-kedua lebar" data-aksi="masuk-google" data-kunci-fokus="masuk-ulang">Masuk ulang</button>' : ''}
+        <button type="button" class="tombol tombol-teks lebar" data-aksi="keluar-google" data-kunci-fokus="keluar-google">Keluar</button>
+      </div>`;
+  }
+
+  /** Perbarui bagian sinkron yang sedang tampil, tanpa menggambar ulang seluruh layar. */
+  function perbaruiTampilanSinkron() {
+    const bagian = $('#isi-sinkron');
+    if (bagian) {
+      const aktif = document.activeElement;
+      const kunci = aktif && bagian.contains(aktif) ? aktif.getAttribute('data-kunci-fokus') : null;
+      bagian.innerHTML = htmlIsiSinkron();
+      if (kunci) {
+        const el = bagian.querySelector('[data-kunci-fokus="' + kunci + '"]') || bagian.querySelector('button');
+        if (el) el.focus({ preventScroll: true });
+      }
+    }
+    const ringkas = $('#status-beranda');
+    if (ringkas) ringkas.innerHTML = htmlStatusBeranda();
+  }
+
+  function mulaiMasuk() {
+    if (!sinkronSiap()) return;
+    if (navigator.onLine === false) {
+      tampilkanToast('Tidak ada sambungan internet. Coba lagi saat sudah tersambung.');
+      return;
+    }
+    const alamat = sinkron.urlLogin();
+    if (!alamat) {
+      tampilkanToast('Browser menolak menyimpan data, jadi login tidak bisa dimulai.');
+      return;
+    }
+    location.assign(alamat); // ke halaman login Google; kembalinya ditangani ambilJawabanLogin
+  }
+
+  async function selesaikanMasuk(jawaban) {
+    const h = await sinkron.selesaikanLogin(jawaban);
+    if (!h.ok) {
+      perbaruiTampilanSinkron();
+      if (h.jenis === 'batal') tampilkanToast(h.pesan);
+      else await pesanDialog('Masuk tidak berhasil', h.pesan + ' Catatan di perangkat ini tidak berubah.');
+      return;
+    }
+    galatSinkron = null;
+    galatDitampilkan = '';
+    sudahDitanyaSambung = false;
+    hapusPemberitahuan('sinkron');
+    hapusPemberitahuan('masuk-ulang');
+    gambarUlang();
+    tampilkanToast('Masuk sebagai ' + (h.sesi.email || 'akun Google') + '.');
+    jalankanSinkron({ tanya: true, dariPengguna: true });
+  }
+
+  async function keluarGoogle() {
+    const sesi = sesiGoogle();
+    if (!sesi) return;
+    const ya = await konfirmasi({
+      judul: 'Keluar dari akun Google?',
+      pesan: 'Catatan tetap ada di perangkat ini dan di akun Google, tetapi tidak lagi disamakan sampai Anda masuk lagi.',
+      ya: 'Keluar',
+      bahaya: false
+    });
+    if (!ya) return;
+    clearTimeout(pewaktuSinkron);
+    pewaktuSinkron = null;
+    // Kirim dulu perubahan yang belum sampai, supaya perangkat lain tidak ketinggalan.
+    if (sesi.terhubung && !sesi.perluMasukLagi && navigator.onLine !== false) await jalankanSinkron();
+    sinkron.keluar();
+    galatSinkron = null;
+    galatDitampilkan = '';
+    sudahDitanyaSambung = false;
+    hapusPemberitahuan('sinkron');
+    hapusPemberitahuan('masuk-ulang');
+    gambarUlang();
+    tampilkanToast('Sudah keluar. Catatan di perangkat ini tetap ada.');
+  }
+
+  /** Dipanggil sinkron.js untuk menyimpan hasil gabungan; tidak menjadwalkan sinkron lagi. */
+  function simpanDariSinkron(dataBaru) {
+    if (modeSimpan !== 'normal') return { ok: false, pesan: 'Data di browser ini sedang tidak bisa disimpan.' };
+    const hasil = D.simpanData(penyimpanan, dataBaru);
+    if (!hasil.ok) return hasil;
+    data = dataBaru;
+    gambarUlang();
+    return { ok: true };
+  }
+
+  /** Sinkron sebentar lagi; panggilan beruntun digabung jadi satu. */
+  function jadwalkanSinkron(jeda) {
+    if (!sesiGoogle()) return;
+    clearTimeout(pewaktuSinkron);
+    pewaktuSinkron = setTimeout(function () {
+      pewaktuSinkron = null;
+      jalankanSinkron();
+    }, jeda);
+  }
+
+  /** Aplikasi ditinggalkan: perubahan yang masih menunggu giliran dikirim sekarang juga. */
+  function kirimYangMenunggu() {
+    if (!pewaktuSinkron) return;
+    clearTimeout(pewaktuSinkron);
+    pewaktuSinkron = null;
+    jalankanSinkron();
+  }
+
+  /** Sinkron tanpa diminta: saat aplikasi terbuka, kembali dilihat, atau internet tersambung lagi. */
+  function sinkronOtomatis() {
+    const sesi = sesiGoogle();
+    if (!sesi || sesi.perluMasukLagi || sinkronBerjalan > 0) return;
+    if (!sesi.terhubung && sudahDitanyaSambung) return; // menunggu pilihan pengguna
+    if (document.hidden || navigator.onLine === false) return;
+    const jeda = galatSinkron && galatSinkron.jenis !== 'jaringan' ? JEDA_SETELAH_GAGAL : JEDA_ANTAR_OTOMATIS;
+    if (Date.now() - sinkronTerakhirDicoba < jeda) return;
+    jalankanSinkron();
+  }
+
+  /**
+   * Jalankan sinkron dan tampilkan hasilnya.
+   * opsi: {
+   *   caraPertama   'gabung' | 'pakaiAwan': jawaban pengguna saat pertama disambungkan
+   *   tanya         boleh menampilkan dialog pilihan (kalau tidak, cukup kartu pemberitahuan)
+   *   dariPengguna  diminta lewat tombol: hasilnya selalu diberitahukan
+   * }
+   */
+  async function jalankanSinkron(opsi) {
+    opsi = opsi || {};
+    if (!sesiGoogle()) return;
+    sinkronTerakhirDicoba = Date.now();
+    sinkronBerjalan += 1;
+    perbaruiTampilanSinkron();
+    const masukan = {
+      ambilLokal: function () { return data; },
+      simpanLokal: simpanDariSinkron,
+      caraPertama: opsi.caraPertama,
+      paksa: !!opsi.paksa
+    };
+    let h = await sinkron.sinkronkan(masukan);
+    // Bisa terserobot sinkron lain yang tidak membawa jawaban pengguna: ulangi sekali.
+    if (h.ok && h.status === 'perlu-pilihan' && opsi.caraPertama) h = await sinkron.sinkronkan(masukan);
+    sinkronBerjalan -= 1;
+
+    if (h.ok && h.status === 'perlu-pilihan') {
+      galatSinkron = null;
+      perbaruiTampilanSinkron();
+      if (opsi.tanya) await tanyaCaraSambung(h);
+      else tampilkanKartuBelumSambung();
+      return;
+    }
+
+    if (!h.ok) {
+      galatSinkron = { jenis: h.jenis, pesan: h.pesan };
+      if (h.tersimpanLokal || h.cadangan) gambarUlang();
+      else perbaruiTampilanSinkron();
+      tampilkanGalatSinkron(h, !!opsi.dariPengguna);
+      return;
+    }
+
+    galatSinkron = null;
+    galatDitampilkan = '';
+    sudahDitanyaSambung = false;
+    hapusPemberitahuan('sinkron');
+    if (h.cadangan && layarAktif && layarAktif.nama === 'pengaturan') gambarUlang(); // daftar salinan pengaman bertambah
+    else perbaruiTampilanSinkron();
+
+    if (h.pertama === 'gabung') {
+      const n = h.ringkas ? h.ringkas.transaksiDitambahkan : 0;
+      tampilkanToast('Data digabung: ' + n + ' transaksi dari perangkat ini ditambahkan ke akun Google.');
+    } else if (h.pertama === 'pakaiAwan' && h.berubahLokal) {
+      tampilkanToast(h.cadangan
+        ? 'Data dari akun Google sudah dipakai. Data lama perangkat ini disimpan sebagai salinan pengaman.'
+        : 'Data dari akun Google sudah dipakai di perangkat ini.');
+    } else if (h.pertama === 'unggah') {
+      tampilkanToast('Data perangkat ini sudah tersimpan di akun Google.');
+    } else if (h.berubahLokal) {
+      // Sinkron otomatis tidak boleh menggusur pesan yang masih punya tombol (mis. "Batalkan").
+      if (opsi.dariPengguna || !$('#toast button')) tampilkanToast('Data diperbarui dari perangkat lain.');
+    } else if (opsi.dariPengguna) {
+      tampilkanToast(h.terkirim > 0 ? 'Perubahan sudah terkirim ke akun Google.' : 'Sudah sama dengan data di akun Google.');
+    }
+  }
+
+  function tampilkanGalatSinkron(h, dariPengguna) {
+    if (h.jenis === 'jaringan') {
+      if (dariPengguna) tampilkanToast(h.pesan);
+      return;
+    }
+    const tanda = h.jenis + ':' + h.pesan;
+    if (!dariPengguna && tanda === galatDitampilkan) return;
+    galatDitampilkan = tanda;
+    const tetap = ' Catatan tetap tersimpan di perangkat ini.';
+    if (h.jenis === 'sesi') {
+      tambahPemberitahuan({
+        id: 'sinkron',
+        judul: 'Perlu masuk lagi dengan Google',
+        isi: 'Sesi login di perangkat ini sudah berakhir, jadi sinkron berhenti.' + tetap,
+        aksi: [{ label: 'Masuk lagi', aksi: 'masuk-google' }],
+        bisaDitutup: true
+      });
+    } else if (h.jenis === 'izin') {
+      tambahPemberitahuan({
+        id: 'sinkron',
+        judul: 'Akun Google ini tidak diizinkan',
+        isi: h.pesan + tetap,
+        aksi: [{ label: 'Keluar', aksi: 'keluar-google' }],
+        bisaDitutup: true
+      });
+    } else {
+      tambahPemberitahuan({
+        id: 'sinkron',
+        judul: 'Sinkron berhenti',
+        isi: h.pesan + tetap,
+        aksi: [{ label: 'Coba lagi', aksi: 'sinkron-sekarang' }],
+        bisaDitutup: true
+      });
+    }
+  }
+
+  function tampilkanKartuBelumSambung() {
+    if (sudahDitanyaSambung) return;
+    sudahDitanyaSambung = true;
+    tambahPemberitahuan({
+      id: 'sinkron',
+      judul: 'Perangkat ini belum disambungkan',
+      isi: 'Anda sudah masuk dengan Google, tetapi catatan di perangkat ini belum disamakan dengan data di akun Google.',
+      aksi: [{ label: 'Sambungkan sekarang', aksi: 'sambungkan' }],
+      bisaDitutup: true
+    });
+  }
+
+  /** Perangkat ini dan akun Google sama-sama sudah berisi data: tanyakan mau diapakan. */
+  async function tanyaCaraSambung(h) {
+    const isi = function (r) { return r.transaksi + ' transaksi dan ' + r.akun + ' akun'; };
+    const pilih = await pilihan({
+      judul: 'Sambungkan perangkat ini',
+      pesan: 'Di akun Google Anda sudah ada ' + isi(h.awan) + '. Di perangkat ini ada ' + isi(h.lokal) +
+        '. Apa pun pilihannya, data perangkat ini disalin dulu sebagai salinan pengaman.',
+      pilihan: [
+        {
+          nilai: 'gabung', label: 'Gabungkan keduanya', utama: true,
+          ket: 'Catatan di perangkat ini ditambahkan ke data di akun Google. Akun dan kategori yang bernama sama disatukan.'
+        },
+        {
+          nilai: 'pakaiAwan', label: 'Pakai data dari Google saja',
+          ket: 'Catatan di perangkat ini tidak dipakai lagi.'
+        },
+        { nilai: '', label: 'Nanti saja' }
+      ]
+    });
+    if (pilih === 'pakaiAwan') {
+      const ya = await konfirmasi({
+        judul: 'Ganti data di perangkat ini?',
+        pesan: h.lokal.transaksi + ' transaksi di perangkat ini akan diganti dengan data dari akun Google. Salinannya tetap bisa diunduh di Pengaturan.',
+        ya: 'Ganti data'
+      });
+      if (!ya) {
+        tampilkanKartuBelumSambung();
+        return;
+      }
+    }
+    if (pilih !== 'gabung' && pilih !== 'pakaiAwan') {
+      tampilkanKartuBelumSambung();
+      return;
+    }
+    hapusPemberitahuan('sinkron');
+    await jalankanSinkron({ caraPertama: pilih, dariPengguna: true });
+  }
+
+  /** Dipanggil sekali saat aplikasi dibuka, sesudah layar pertama tampil. */
+  function mulaiSinkron(jawabanLogin) {
+    if (!sinkron) return;
+    setInterval(sinkronOtomatis, JEDA_BERKALA);
+    if (jawabanLogin) {
+      if (sinkronSiap()) selesaikanMasuk(jawabanLogin);
+      else tampilkanToast('Login tidak bisa diselesaikan karena data di browser ini belum bisa disimpan.');
+      return;
+    }
+    const sesi = sesiGoogle();
+    if (!sesi) return;
+    if (sesi.perluMasukLagi) {
+      tampilkanGalatSinkron({ jenis: 'sesi', pesan: '' }, false);
+      return;
+    }
+    if (sesi.masukPada && Date.now() - sesi.masukPada > HARI_MASUK_ULANG * MS_SEHARI) {
+      tambahPemberitahuan({
+        id: 'masuk-ulang',
+        judul: 'Masuk ulang dengan Google',
+        isi: 'Sudah lebih dari 5 bulan sejak terakhir masuk. Masuk ulang sekali supaya login Google untuk aplikasi ini tetap aktif.',
+        aksi: [{ label: 'Masuk ulang', aksi: 'masuk-google' }],
+        bisaDitutup: true
+      });
+    }
+    jadwalkanSinkron(400);
   }
 
   // ===========================================================================
@@ -401,6 +833,7 @@
       <header class="kepala">
         <h1 tabindex="-1">${NAMA_APLIKASI}</h1>
         <p class="sub">${esc(D.formatTanggalPanjang(hariIni))}</p>
+        <p class="sub status-beranda" id="status-beranda">${htmlStatusBeranda()}</p>
       </header>
 
       <section class="kartu-saldo" aria-labelledby="judul-saldo">
@@ -454,10 +887,13 @@
     if (!D.perluPengingatBackup(data, sekarang)) return '';
     const hari = D.hariSejakBackup(data, sekarang);
     const judul = hari === null ? 'Belum pernah backup' : 'Backup terakhir ' + hari + ' hari lalu';
+    const alasan = tersambung()
+      ? 'Sinkron bukan pengganti backup: yang terhapus di satu perangkat ikut terhapus di perangkat lain.'
+      : 'Data hanya tersimpan di browser ini.';
     return `
       <section class="kartu-info peringatan" aria-labelledby="pengingat-backup">
         <h2 id="pengingat-backup">${esc(judul)}</h2>
-        <p>Data hanya tersimpan di browser ini. Unduh backup dan simpan filenya di tempat lain.</p>
+        <p>${alasan} Unduh backup dan simpan filenya di tempat lain.</p>
         <div class="baris-tombol">
           <button type="button" class="tombol tombol-utama" data-aksi="unduh-backup">Unduh backup</button>
         </div>
@@ -783,12 +1219,40 @@
       </section>`;
   }
 
+  /** Salinan data perangkat yang dibuat otomatis sebelum pertama kali disambungkan ke akun Google. */
+  function htmlSalinanPengaman(daftar) {
+    if (!daftar.length) return '';
+    return `
+      <section class="bagian" aria-labelledby="judul-cadangan">
+        <h2 id="judul-cadangan" class="judul-bagian">Salinan pengaman</h2>
+        <p class="petunjuk">Salinan data perangkat ini, dibuat otomatis sebelum datanya digabung atau diganti dengan data dari akun Google. Unduh kalau masih diperlukan (bisa dipulihkan seperti backup), lalu hapus supaya tidak memenuhi penyimpanan.</p>
+        <ul class="daftar-salinan">
+          ${daftar.map(function (k) {
+            const label = labelSalinan(k);
+            return `<li>
+                <span class="nama-salinan">${esc(label)}</span>
+                <span class="baris-tombol rapat">
+                  <button type="button" class="tombol tombol-kedua kecil" data-aksi="unduh-cadangan" data-kunci="${esc(k)}" aria-label="Unduh salinan pengaman ${esc(label)}">Unduh</button>
+                  <button type="button" class="tombol tombol-bahaya kecil" data-aksi="hapus-cadangan" data-kunci="${esc(k)}" aria-label="Hapus salinan pengaman ${esc(label)}">Hapus</button>
+                </span>
+              </li>`;
+          }).join('')}
+        </ul>
+      </section>`;
+  }
+
   function htmlPengaturan() {
     const backup = data.pengaturan.backupTerakhir;
+    const ikutAwan = tersambung();
     return `
       <header class="kepala"><h1 tabindex="-1">Pengaturan</h1></header>
 
-      <section aria-labelledby="judul-atur-akun">
+      <section aria-labelledby="judul-sinkron">
+        <h2 id="judul-sinkron" class="judul-bagian">Sinkron antar perangkat</h2>
+        <div id="isi-sinkron">${htmlIsiSinkron()}</div>
+      </section>
+
+      <section class="bagian" aria-labelledby="judul-atur-akun">
         <div class="judul-baris">
           <h2 id="judul-atur-akun" class="judul-bagian">Akun</h2>
           <a class="tautan-kecil" href="#/akun/baru" data-kunci-fokus="tambah-akun">+ Tambah akun</a>
@@ -823,7 +1287,7 @@
 
       <section class="bagian" aria-labelledby="judul-data">
         <h2 id="judul-data" class="judul-bagian">Data &amp; backup</h2>
-        <p class="petunjuk">Data hanya tersimpan di browser ini. Backup terakhir: <strong>${backup ? esc(formatWaktu(backup)) : 'belum pernah'}</strong>.</p>
+        <p class="petunjuk">${ikutAwan ? 'Data tersimpan di browser ini dan di akun Google Anda.' : 'Data hanya tersimpan di browser ini.'} Backup terakhir: <strong>${backup ? esc(formatWaktu(backup)) : 'belum pernah'}</strong>.</p>
         <div class="tumpuk-tombol">
           <button type="button" class="tombol tombol-utama lebar" data-aksi="unduh-backup" data-kunci-fokus="unduh-backup">Unduh backup (JSON)</button>
           <button type="button" class="tombol tombol-kedua lebar" data-aksi="pilih-backup" data-kunci-fokus="pilih-backup">Pulihkan dari backup</button>
@@ -832,11 +1296,14 @@
         <input type="file" id="pilih-backup" accept=".json,application/json" hidden>
       </section>
 
+      ${htmlSalinanPengaman(D.daftarCadangan(penyimpanan))}
       ${htmlSalinanRusak(D.daftarSalinanRusak(penyimpanan))}
 
       <section class="bagian" aria-labelledby="judul-hapus-semua">
         <h2 id="judul-hapus-semua" class="judul-bagian">Hapus semua data</h2>
-        <p class="petunjuk">Menghapus semua akun, kategori, dan transaksi di browser ini, lalu kembali ke data awal.</p>
+        <p class="petunjuk">${ikutAwan
+          ? 'Menghapus semua akun, kategori, dan transaksi di perangkat ini, di akun Google, dan di perangkat lain yang tersambung, lalu kembali ke data awal.'
+          : 'Menghapus semua akun, kategori, dan transaksi di browser ini, lalu kembali ke data awal.'}</p>
         <button type="button" class="tombol tombol-bahaya lebar jarak-atas" data-aksi="hapus-semua" data-kunci-fokus="hapus-semua">Hapus semua data</button>
       </section>
 
@@ -1496,6 +1963,29 @@
     return konfirmasi({ judul: judul, pesan: pesan, ya: 'Tutup', hanyaTutup: true });
   }
 
+  /**
+   * Dialog dengan beberapa pilihan. opsi.pilihan: [{ nilai, label, ket?, utama? }].
+   * Hasil: Promise<nilai yang dipilih>; '' kalau ditutup tanpa memilih (mis. Esc).
+   * Fokus awal di pilihan pertama.
+   */
+  function pilihan(opsi) {
+    return new Promise(function (selesai) {
+      const dialog = $('#dialog-pilihan');
+      $('#pilihan-judul').textContent = opsi.judul;
+      $('#pilihan-pesan').textContent = opsi.pesan || '';
+      $('#pilihan-daftar').innerHTML = opsi.pilihan.map(function (p) {
+        const gaya = p.utama ? 'tombol-utama' : (p.nilai ? 'tombol-kedua' : 'tombol-teks');
+        return `<button type="submit" value="${esc(p.nilai)}" class="tombol ${gaya} pilihan">
+            <span class="pilihan-label">${esc(p.label)}</span>
+            ${p.ket ? `<span class="pilihan-ket">${esc(p.ket)}</span>` : ''}
+          </button>`;
+      }).join('');
+      dialog.returnValue = '';
+      dialog.addEventListener('close', function () { selesai(dialog.returnValue || ''); }, { once: true });
+      dialog.showModal();
+    });
+  }
+
   let pewaktuToast = null;
 
   /** Pesan singkat di atas navigasi. aksi: { label, aksi } (mis. "Batalkan"). */
@@ -1701,23 +2191,68 @@
     isi += '.';
     if (r.backupTerakhir) isi += ' Backup dibuat ' + formatWaktu(r.backupTerakhir) + '.';
     isi += ' Data sekarang (' + data.transaksi.length + ' transaksi) akan diganti dan tidak bisa dikembalikan.';
+    if (tersambung()) isi += ' Karena perangkat ini tersambung ke akun Google, penggantian ini juga berlaku di perangkat lain.';
     const ya = await konfirmasi({ judul: 'Ganti data dengan backup ini?', pesan: isi, ya: 'Ganti data' });
     if (!ya) return;
-    const s = simpan(hasil.data);
+    let pengganti = hasil.data;
+    if (tersambung()) {
+      // Isi backup dicatat sebagai perubahan baru (dan yang tidak ada di backup diberi tanda
+      // hapus), supaya perangkat lain ikut menjadi sama dengan backup, bukan sebaliknya.
+      const siap = D.siapkanPulihan(data, hasil.data, Date.now());
+      if (!siap.ok) {
+        await pesanDialog('Backup tidak bisa dipakai', siap.pesan + ' Data Anda tidak diubah.');
+        return;
+      }
+      pengganti = siap.data;
+    }
+    const s = simpan(pengganti);
     tampilkanToast(s.ok ? 'Data dipulihkan dari backup.' : s.pesan);
+  }
+
+  function unduhCadangan(kunci) {
+    const isi = bacaSalinan(kunci);
+    if (isi == null) {
+      tampilkanToast('Salinan itu sudah tidak ada.');
+      gambarUlang();
+      return;
+    }
+    const tanggal = (/(\d{4}-\d{2}-\d{2})T/.exec(kunci) || [])[1] || D.tanggalLokal();
+    unduhFile('keuangan-harian-salinan-pengaman-' + tanggal + '.json', isi, 'application/json');
+    tampilkanToast('Salinan pengaman diunduh. Isinya bisa dipulihkan lewat "Pulihkan dari backup".');
+  }
+
+  async function hapusCadangan(kunci) {
+    const ya = await konfirmasi({
+      judul: 'Hapus salinan pengaman ini?',
+      pesan: 'Salinan dari ' + labelSalinan(kunci) + ' akan dihapus dan tidak bisa dikembalikan.',
+      ya: 'Hapus'
+    });
+    if (!ya) return;
+    const hasil = D.hapusCadangan(penyimpanan, kunci);
+    if (!hasil.ok) {
+      tampilkanToast(hasil.pesan);
+      return;
+    }
+    gambarUlang();
+    tampilkanToast('Salinan pengaman dihapus.');
   }
 
   async function hapusSemua() {
     const ya = await konfirmasi({
       judul: 'Hapus semua data?',
-      pesan: 'Semua akun, kategori, dan ' + data.transaksi.length + ' transaksi di browser ini akan dihapus dan tidak bisa dikembalikan. Unduh backup dulu kalau masih diperlukan.',
+      pesan: tersambung()
+        ? 'Semua akun, kategori, dan ' + data.transaksi.length + ' transaksi akan dihapus dari perangkat ini, dari akun Google, dan dari perangkat lain yang tersambung, dan tidak bisa dikembalikan. Unduh backup dulu kalau masih diperlukan. Kalau hanya ingin mengosongkan perangkat ini, keluar dulu dari akun Google.'
+        : 'Semua akun, kategori, dan ' + data.transaksi.length + ' transaksi di browser ini akan dihapus dan tidak bisa dikembalikan. Unduh backup dulu kalau masih diperlukan.',
       ya: 'Hapus semua'
     });
     if (!ya) return;
+    // Tersambung: mulai lagi dari data awal, dengan tanda hapus untuk semua yang lama,
+    // supaya penghapusannya ikut sampai ke akun Google dan perangkat lain.
+    const ikutAwan = tersambung();
     if (modeSimpan === 'memori') {
       data = D.buatDataAwal();
     } else {
-      const hasil = D.hapusSemuaData(penyimpanan);
+      const hasil = D.hapusSemuaData(penyimpanan, ikutAwan ? D.kosongkanSemua(data, Date.now()).data : undefined);
       if (!hasil.ok) {
         tampilkanToast(hasil.pesan);
         return;
@@ -1731,6 +2266,7 @@
     }
     gambarUlang();
     tampilkanToast('Semua data dihapus. Aplikasi kembali ke data awal.');
+    if (ikutAwan) jadwalkanSinkron(0);
   }
 
   async function mulaiDataBaru() {
@@ -1777,6 +2313,19 @@
       unduhSalinan(el.getAttribute('data-kunci'));
     } else if (aksi === 'hapus-salinan') {
       hapusSalinan(el.getAttribute('data-kunci'));
+    } else if (aksi === 'unduh-cadangan') {
+      unduhCadangan(el.getAttribute('data-kunci'));
+    } else if (aksi === 'hapus-cadangan') {
+      hapusCadangan(el.getAttribute('data-kunci'));
+    } else if (aksi === 'masuk-google') {
+      mulaiMasuk();
+    } else if (aksi === 'keluar-google') {
+      keluarGoogle();
+    } else if (aksi === 'sinkron-sekarang') {
+      // Diminta langsung: ambil seluruh data awan, jangan hanya menanyakan nomor revisinya.
+      jalankanSinkron({ dariPengguna: true, tanya: true, paksa: true });
+    } else if (aksi === 'sambungkan') {
+      jalankanSinkron({ dariPengguna: true, tanya: true });
     } else if (['bulan-sebelumnya', 'bulan-berikutnya', 'bulan-ini', 'hapus-filter'].indexOf(aksi) >= 0) {
       if (layarAktif && layarAktif.nama === 'riwayat') tanganiAksiRiwayat(aksi);
       else if (layarAktif && layarAktif.nama === 'laporan' && aksi !== 'hapus-filter') tanganiAksiLaporan(aksi);
@@ -1835,13 +2384,27 @@
     $('#layar').addEventListener('change', tanganiPerubahan);
     $('#pemberitahuan').addEventListener('click', tanganiAksi);
 
-    // Kembali ke aplikasi setelah lewat tengah malam: "hari ini" & "bulan ini" diperbarui.
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) gambarUlang();
+      if (document.hidden) {
+        kirimYangMenunggu();
+        return;
+      }
+      // Kembali ke aplikasi setelah lewat tengah malam: "hari ini" & "bulan ini" diperbarui.
+      gambarUlang();
+      sinkronOtomatis();
+    });
+    window.addEventListener('pagehide', kirimYangMenunggu);
+    window.addEventListener('online', function () {
+      sinkronTerakhirDicoba = 0; // internet baru tersambung lagi: langsung coba
+      sinkronOtomatis();
     });
 
     // Aplikasi terbuka di dua tab: ikuti perubahan dari tab lain.
     window.addEventListener('storage', function (e) {
+      if (S && e.key === S.KUNCI_SESI) {
+        gambarUlang(); // masuk atau keluar di tab lain
+        return;
+      }
       if (e.key !== D.KUNCI_PENYIMPANAN || e.newValue == null || modeSimpan !== 'normal') return;
       let hasil;
       try {
@@ -1857,6 +2420,7 @@
 
   function mulai() {
     pasangManifest();
+    const jawabanLogin = ambilJawabanLogin(); // sebelum routing: token langsung dibuang dari alamat
     infoMuat = D.muatData(penyimpanan);
     data = infoMuat.data;
     if (infoMuat.status === 'tanpa-penyimpanan') modeSimpan = 'memori';
@@ -1866,6 +2430,7 @@
     tanganiRute(true);
     sudahMulai = true;
     daftarkanServiceWorker();
+    mulaiSinkron(jawabanLogin);
   }
 
   mulai();
